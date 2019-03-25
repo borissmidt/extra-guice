@@ -2,8 +2,9 @@ package smidt.boris.guice
 
 import com.google.inject.Guice
 import javax.inject.{Inject, Singleton}
-import net.codingwell.scalaguice.ScalaModule
+import net.codingwell.scalaguice.{ScalaModule, ScalaMultibinder}
 import org.scalatest.FunSuite
+
 import scala.collection.JavaConverters._
 
 trait SuperClass[A] {
@@ -42,7 +43,8 @@ object TestModule extends ScalaModule {
     implicit val scanner = SearchScope(
       include = ScopeDef()
     )
-
+    val stringMulti = ScalaMultibinder.newSetBinder[String](binder)
+    stringMulti.addBinding.toInstance("A")
     val x = GenericBinder(binder).bind1[SuperClass]
   }
 

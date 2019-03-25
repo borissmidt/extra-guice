@@ -1,8 +1,13 @@
 package smidt.boris.guice
 
+import com.google.inject.binder.LinkedBindingBuilder
+import com.google.inject.internal.BindingBuilder
+import com.google.inject.multibindings.Multibinder
 import com.google.inject.{Binder, TypeLiteral}
 import com.typesafe.scalalogging.StrictLogging
 import io.github.classgraph.{ClassGraph, ScanResult}
+import net.codingwell.scalaguice.ScalaModule.ScalaAnnotatedBindingBuilder
+import net.codingwell.scalaguice.binder.ScopedBindingBuilderProxy
 import smidt.boris.guice.internal.DefaultMirror._
 import smidt.boris.guice.internal.TypeConverter
 
@@ -53,12 +58,17 @@ case class SearchScope(
 /**
   * helps for creating bindings by searching the classpath
   */
-class GenericBinder(implicit val binder: Binder){
+class GenericBinder(implicit val binder: Binder) {
+
   trait TypeTagCaputerer[T] {
 
-    def apply()(implicit typeTag: TypeTag[T], scanner: SearchScope) = GenericBinder.bindType(typeTag.tpe)
+    def apply()(implicit typeTag: TypeTag[T], scanner: SearchScope) = {
+      GenericBinder.bindGenericType(typeTag.tpe)
+        .map(binding => GenericBinder.unsafeBind(binding._1, binding._2.head))
+    }
 
   }
+
   //cannot pass type tag of higher kinded type so i have to lower the kind
   //compile time enforce that the type you are binding has a type parameter
   def bind1[F[_]] = new TypeTagCaputerer[F[_]] {}
@@ -77,7 +87,13 @@ class GenericBinder(implicit val binder: Binder){
 
   def bind8[F[_, _, _, _, _, _, _, _]] = new TypeTagCaputerer[F[_, _, _, _, _, _, _, _]] {}
 
-  def bindAllImplementing[T:TypeTag]() = GenericBinder.bindAllImplementing[T]
+  def multiBindImplementation[T: TypeTag](binder: Binder)(implicit scope:SearchScope) ={
+    val multibind = new Multibinder[T].permitDuplicates()
+    GenericBinder.getImplementations[T].foreach(
+      multibind.addBinding().to(_: Class[_ <: T]).asEagerSingleton()
+    )
+    //todo do something with the multibind
+  }
 }
 
 object GenericBinder extends StrictLogging {
@@ -87,18 +103,23 @@ object GenericBinder extends StrictLogging {
   val cache = mutable.Map[SearchScope, WeakReference[ScanResult]]()
 
   def clearCache() = {
-    cache.collect{ case (_,WeakReference(x)) =>
+    cache.collect { case (_, WeakReference(x)) =>
       x.close()
     }
     cache.clear()
   }
 
-  def bindAllImplementing[T:TypeTag] = {
-    val typeTag = implicitly[TypeTag[T]]
-
+  def getImplementations[T: TypeTag](implicit scope: SearchScope) = {
+    val typeTag = implicitly[TypeTag[T]].tpe.dealias.typeSymbol
+    val scanResult = scan(scope)
+    scanResult
+      .getClassesImplementing(typeTag.fullName)
+      .loadClasses()
+      .asScala
+      .map(x => x.asInstanceOf[Class[_ <: T]])
   }
 
-  private def scan(scope: SearchScope) = {
+  def scan(scope: SearchScope) = synchronized{
     cache.get(scope)
       .collect { case WeakReference(x) => x }
       .getOrElse {
@@ -116,12 +137,13 @@ object GenericBinder extends StrictLogging {
           .blacklistPackages(exc.packagesVal: _*)
           .verbose()
           .scan()
+
         cache.put(scope, WeakReference(scan))
         scan
       }
   }
 
-  private def bindType(tpe: Type)(implicit scope: SearchScope, binder:Binder) = synchronized {
+  private def bindGenericType(tpe: Type)(implicit scope: SearchScope) = {
     val scanResult = scan(scope)
     val superType = tpe.dealias.typeSymbol
 
@@ -133,7 +155,7 @@ object GenericBinder extends StrictLogging {
     val bindings = names.map(mirror.staticClass).map { x =>
       val baseType = x.toType.baseType(superType)
       (baseType, x.toType)
-      }
+    }
       .groupBy(_._1)
       .mapValues(_.map(_._2))
 
@@ -142,10 +164,11 @@ object GenericBinder extends StrictLogging {
     }
 
     bindings.filter(_._2.size == 1)
-      .map(binding => unsafeBind(binding._1, binding._2.head))
   }
 
-  private def typeLiteral(tpe: Type) = TypeLiteral.get(TypeConverter.scalaTypeToJavaType(tpe)).asInstanceOf[TypeLiteral[Any]]
+  private def typeLiteral(tpe: Type) = {
+    TypeLiteral.get(TypeConverter.scalaTypeToJavaType(tpe)).asInstanceOf[TypeLiteral[Any]]
+  }
 
   private def unsafeBind(x: Type, y: Type)(implicit binder: Binder) = {
     binder.bind(typeLiteral(x)).to(typeLiteral(y))

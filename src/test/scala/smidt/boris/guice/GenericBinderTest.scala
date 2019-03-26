@@ -36,6 +36,16 @@ trait SuperClassArray[T] extends SuperClass[Array[T]]
 
 class SuperClassArrayString extends SuperClassArray[String]
 
+trait Feed
+case class HelloFeed() extends Feed
+case class WorldFeed() extends Feed
+
+@Singleton
+class FeedPrinter @Inject() (f: Set[Feed]){
+  def print() = {
+    println("feeds: ",f.mkString(","))
+  }
+}
 
 object TestModule extends ScalaModule {
 
@@ -45,7 +55,8 @@ object TestModule extends ScalaModule {
     )
     val stringMulti = ScalaMultibinder.newSetBinder[String](binder)
     stringMulti.addBinding.toInstance("A")
-    val x = GenericBinder(binder).bind1[SuperClass]
+    GenericBinder(binder).bind1[SuperClass].scan()
+    GenericBinder(binder).bindImplOf[Feed]
   }
 
 }
@@ -62,6 +73,7 @@ class GenericBinderTest extends FunSuite {
   test("should detect all the unique classes") {
     val injector = Guice.createInjector(TestModule)
     println(injector.getAllBindings.asScala)
-
+    import net.codingwell.scalaguice.InjectorExtensions._
+    injector.instance[FeedPrinter].print()
   }
 }
